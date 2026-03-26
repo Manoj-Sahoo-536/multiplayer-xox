@@ -4,31 +4,32 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { io, Socket } from 'socket.io-client';
+import { io } from 'socket.io-client';
 import { motion } from 'motion/react';
 import { Copy, Users, Play, RotateCcw, Home } from 'lucide-react';
-import { clsx, type ClassValue } from 'clsx';
+import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
-function cn(...inputs: ClassValue[]) {
+function cn(...inputs) {
   return twMerge(clsx(inputs));
 }
 
-type GameStatus = 'lobby' | 'waiting' | 'playing' | 'finished';
-type PlayerSymbol = 'X' | 'O' | null;
-
-let socket: Socket;
+let socket;
 
 export default function App() {
-  const [status, setStatus] = useState<GameStatus>('lobby');
+  const [status, setStatus] = useState('lobby');
   const [roomId, setRoomId] = useState('');
   const [joinCode, setJoinCode] = useState('');
-  const [symbol, setSymbol] = useState<PlayerSymbol>(null);
-  const [board, setBoard] = useState<PlayerSymbol[]>(Array(9).fill(null));
-  const [turn, setTurn] = useState<PlayerSymbol>('X');
-  const [winner, setWinner] = useState<string | null>(null);
-  const [winningLine, setWinningLine] = useState<number[] | null>(null);
+  const [symbol, setSymbol] = useState(null);
+  const [board, setBoard] = useState(Array(9).fill(null));
+  const [turn, setTurn] = useState('X');
+  const [winner, setWinner] = useState(null);
+  const [winningLine, setWinningLine] = useState(null);
   const [error, setError] = useState('');
+  const [scores, setScores] = useState({});
+  const [showSymbolPicker, setShowSymbolPicker] = useState(false);
+  const [pickerAction, setPickerAction] = useState(null);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     // Connect to the same host/port
@@ -47,22 +48,38 @@ export default function App() {
       setError('');
     });
 
-    socket.on('gameStart', ({ board, turn }) => {
+    socket.on('gameStart', ({ board, turn, scores }) => {
       setBoard(board);
       setTurn(turn);
       setStatus('playing');
       setWinner(null);
       setWinningLine(null);
+      setScores(scores);
     });
 
-    socket.on('gameState', ({ board, turn, winner, winningLine }) => {
+    socket.on('gameState', ({ board, turn, winner, winningLine, scores }) => {
       setBoard(board);
       setTurn(turn);
+      setScores(scores);
       if (winner) {
         setWinner(winner);
         setWinningLine(winningLine);
         setStatus('finished');
+      } else {
+        setWinner(null);
+        setWinningLine(null);
+        setStatus('playing');
       }
+    });
+
+    socket.on('gameRestart', ({ symbol, board, turn, scores }) => {
+      setSymbol(symbol);
+      setBoard(board);
+      setTurn(turn);
+      setWinner(null);
+      setWinningLine(null);
+      setStatus('playing');
+      setScores(scores);
     });
 
     socket.on('playerDisconnected', () => {
@@ -71,6 +88,7 @@ export default function App() {
       setRoomId('');
       setSymbol(null);
       setBoard(Array(9).fill(null));
+      setScores({});
     });
 
     socket.on('error', (msg) => {
@@ -83,28 +101,42 @@ export default function App() {
   }, []);
 
   const createRoom = () => {
-    socket.emit('createRoom');
+    setPickerAction('create');
+    setShowSymbolPicker(true);
   };
 
-  const joinRoom = (e: React.FormEvent) => {
+  const handleSymbolSelect = (selectedSymbol) => {
+    setShowSymbolPicker(false);
+    if (pickerAction === 'create') {
+      socket.emit('createRoom', { selectedSymbol });
+    } else if (pickerAction === 'restart') {
+      socket.emit('restartGame', { roomId, selectedSymbol });
+    }
+    setPickerAction(null);
+  };
+
+  const joinRoom = (e) => {
     e.preventDefault();
     if (joinCode.trim()) {
       socket.emit('joinRoom', joinCode.trim().toUpperCase());
     }
   };
 
-  const makeMove = (index: number) => {
+  const makeMove = (index) => {
     if (status === 'playing' && turn === symbol && !board[index] && !winner) {
       socket.emit('makeMove', { roomId, index });
     }
   };
 
   const restartGame = () => {
-    socket.emit('restartGame', roomId);
+    setPickerAction('restart');
+    setShowSymbolPicker(true);
   };
 
   const copyRoomId = () => {
     navigator.clipboard.writeText(roomId);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   const goHome = () => {
@@ -116,6 +148,7 @@ export default function App() {
     setWinner(null);
     setWinningLine(null);
     setError('');
+    setScores({});
     socket.disconnect();
     socket.connect(); // Reconnect to get a fresh socket
   };
@@ -123,6 +156,40 @@ export default function App() {
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-50 flex items-center justify-center p-4 font-sans selection:bg-neutral-800">
       <div className="w-full max-w-md">
+        {/* Symbol Picker Modal */}
+        {showSymbolPicker && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4"
+            onClick={() => setShowSymbolPicker(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              className="bg-neutral-900 border border-neutral-800 p-8 rounded-2xl shadow-2xl max-w-sm w-full"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h2 className="text-2xl font-bold mb-2 text-center">Choose Your Symbol</h2>
+              <p className="text-neutral-400 text-center mb-8">X always starts first</p>
+              <div className="flex gap-4">
+                <button
+                  onClick={() => handleSymbolSelect('X')}
+                  className="flex-1 bg-blue-500/20 hover:bg-blue-500/30 border-2 border-blue-500 text-blue-400 active:scale-95 transition-all duration-200 font-bold py-8 px-4 rounded-xl text-4xl"
+                >
+                  X
+                </button>
+                <button
+                  onClick={() => handleSymbolSelect('O')}
+                  className="flex-1 bg-rose-500/20 hover:bg-rose-500/30 border-2 border-rose-500 text-rose-400 active:scale-95 transition-all duration-200 font-bold py-8 px-4 rounded-xl text-4xl"
+                >
+                  O
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+
         {/* Header */}
         <div className="text-center mb-10">
           <h1 className="text-4xl font-bold tracking-tight mb-2">Tic-Tac-Toe</h1>
@@ -153,7 +220,7 @@ export default function App() {
               </h2>
               <button
                 onClick={createRoom}
-                className="w-full bg-white text-black hover:bg-neutral-200 transition-colors font-medium py-3 px-4 rounded-xl flex items-center justify-center gap-2"
+                className="w-full bg-white text-black hover:bg-neutral-200 active:scale-95 transition-all duration-200 font-medium py-3 px-4 rounded-xl flex items-center justify-center gap-2"
               >
                 Create Room
               </button>
@@ -179,12 +246,12 @@ export default function App() {
                   value={joinCode}
                   onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
                   maxLength={6}
-                  className="flex-1 bg-neutral-950 border border-neutral-800 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-neutral-700 transition-all font-mono uppercase tracking-wider"
+                  className="flex-1 bg-neutral-950 border border-neutral-800 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-neutral-700 focus:scale-95 transition-all duration-200 font-mono uppercase tracking-wider"
                 />
                 <button
                   type="submit"
                   disabled={joinCode.length < 3}
-                  className="bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium px-6 rounded-xl"
+                  className="bg-white text-black hover:bg-neutral-100 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-neutral-800 disabled:text-neutral-400 transition-all duration-200 font-medium px-6 rounded-xl"
                 >
                   Join
                 </button>
@@ -210,16 +277,26 @@ export default function App() {
               <span className="font-mono text-3xl tracking-widest font-bold text-white">{roomId}</span>
               <button
                 onClick={copyRoomId}
-                className="p-2 hover:bg-neutral-800 rounded-lg transition-colors text-neutral-400 hover:text-white"
+                className="p-2 hover:bg-neutral-800 active:scale-95 rounded-lg transition-all duration-200 text-neutral-400 hover:text-white relative"
                 title="Copy Code"
               >
                 <Copy className="w-5 h-5" />
+                {copied && (
+                  <motion.span
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0 }}
+                    className="absolute -top-8 left-1/2 -translate-x-1/2 bg-white text-black text-xs px-2 py-1 rounded whitespace-nowrap"
+                  >
+                    Copied!
+                  </motion.span>
+                )}
               </button>
             </div>
 
             <button
               onClick={goHome}
-              className="text-neutral-500 hover:text-neutral-300 transition-colors text-sm"
+              className="text-neutral-500 hover:text-neutral-300 active:scale-95 transition-all duration-200 text-sm"
             >
               Cancel
             </button>
@@ -243,12 +320,12 @@ export default function App() {
                   {symbol}
                 </div>
                 <div className="text-sm">
-                  <p className="text-neutral-400">You are</p>
-                  <p className="font-semibold">Player {symbol}</p>
+                  <p className="text-neutral-400">You</p>
+                  <p className="font-semibold text-lg">{scores[socket?.id] || 0}</p>
                 </div>
               </div>
 
-              <div className="text-right">
+              <div className="text-center">
                 {status === 'playing' ? (
                   <div className={cn(
                     "px-4 py-2 rounded-lg text-sm font-medium transition-colors",
@@ -264,11 +341,24 @@ export default function App() {
                   </div>
                 )}
               </div>
+
+              <div className="flex items-center gap-3">
+                <div className="text-sm text-right">
+                  <p className="text-neutral-400">Opponent</p>
+                  <p className="font-semibold text-lg">{Object.values(scores).find((_, i) => Object.keys(scores)[i] !== socket?.id) || 0}</p>
+                </div>
+                <div className={cn(
+                  "w-10 h-10 rounded-lg flex items-center justify-center font-bold text-xl",
+                  symbol === 'X' ? "bg-rose-500/20 text-rose-400" : "bg-blue-500/20 text-blue-400"
+                )}>
+                  {symbol === 'X' ? 'O' : 'X'}
+                </div>
+              </div>
             </div>
 
             {/* Board */}
             <div className="aspect-square bg-neutral-900 border border-neutral-800 p-4 rounded-3xl shadow-2xl">
-              <div className="grid grid-cols-3 gap-3 h-full">
+              <div className="grid grid-cols-3 gap-2 h-full">
                 {board.map((cell, i) => {
                   const isWinningCell = winningLine?.includes(i);
                   return (
@@ -277,25 +367,24 @@ export default function App() {
                       onClick={() => makeMove(i)}
                       disabled={status !== 'playing' || !!cell || turn !== symbol}
                       className={cn(
-                        "relative flex items-center justify-center text-5xl font-bold rounded-2xl transition-all duration-200",
-                        !cell && status === 'playing' && turn === symbol && "hover:bg-neutral-800 cursor-pointer",
-                        !cell && (status !== 'playing' || turn !== symbol) && "cursor-default",
-                        cell && "bg-neutral-950",
-                        isWinningCell && cell === 'X' && "bg-blue-500/20 text-blue-400 ring-2 ring-blue-500/50",
-                        isWinningCell && cell === 'O' && "bg-rose-500/20 text-rose-400 ring-2 ring-rose-500/50",
-                        cell === 'X' && !isWinningCell && "text-blue-400",
-                        cell === 'O' && !isWinningCell && "text-rose-400"
+                        "relative flex items-center justify-center text-5xl font-bold rounded-xl transition-all duration-200 border-2",
+                        !cell && status === 'playing' && turn === symbol && "border-neutral-700 hover:border-neutral-500 hover:bg-neutral-800 cursor-pointer active:scale-95",
+                        !cell && (status !== 'playing' || turn !== symbol) && "border-neutral-800 cursor-default",
+                        cell && "bg-neutral-950 border-neutral-800",
+                        isWinningCell && cell === 'X' && "bg-blue-500/20 border-blue-500 text-blue-400",
+                        isWinningCell && cell === 'O' && "bg-rose-500/20 border-rose-500 text-rose-400",
+                        cell === 'X' && !isWinningCell && "border-neutral-800 text-blue-400",
+                        cell === 'O' && !isWinningCell && "border-neutral-800 text-rose-400"
                       )}
                     >
-                      {cell && (
-                        <motion.span
-                          initial={{ scale: 0.5, opacity: 0 }}
-                          animate={{ scale: 1, opacity: 1 }}
-                          transition={{ type: "spring", stiffness: 300, damping: 20 }}
-                        >
-                          {cell}
-                        </motion.span>
-                      )}
+                      <motion.span
+                        initial={cell ? { scale: 0.5, opacity: 0 } : false}
+                        animate={cell ? { scale: 1, opacity: 1 } : { opacity: 0 }}
+                        transition={{ type: "spring", stiffness: 300, damping: 20 }}
+                        className="absolute"
+                      >
+                        {cell}
+                      </motion.span>
                     </button>
                   );
                 })}
@@ -321,13 +410,14 @@ export default function App() {
                 <div className="flex gap-3">
                   <button
                     onClick={goHome}
-                    className="flex-1 bg-neutral-800 hover:bg-neutral-700 text-white transition-colors font-medium py-3 px-4 rounded-xl flex items-center justify-center gap-2"
+                    className="flex-1 bg-neutral-800 hover:bg-neutral-700 active:scale-95 text-white transition-all duration-200 font-medium py-3 px-4 rounded-xl flex items-center justify-center gap-2"
                   >
                     <Home className="w-4 h-4" /> Home
                   </button>
                   <button
+                    type="button"
                     onClick={restartGame}
-                    className="flex-1 bg-white hover:bg-neutral-200 text-black transition-colors font-medium py-3 px-4 rounded-xl flex items-center justify-center gap-2"
+                    className="flex-1 bg-white hover:bg-neutral-200 active:scale-95 text-black transition-all duration-200 font-medium py-3 px-4 rounded-xl flex items-center justify-center gap-2"
                   >
                     <RotateCcw className="w-4 h-4" /> Play Again
                   </button>

@@ -10,7 +10,7 @@ async function startServer() {
   const io = new Server(httpServer, {
     cors: { origin: "*" }
   });
-  const PORT = 3000;
+  const PORT = process.env.PORT || 3000;
 
   // Game state
   const rooms = new Map();
@@ -18,28 +18,38 @@ async function startServer() {
   io.on("connection", (socket) => {
     console.log("User connected:", socket.id);
 
-    socket.on("createRoom", () => {
+    socket.on("createRoom", ({ selectedSymbol }) => {
       const roomId = Math.random().toString(36).substring(2, 8).toUpperCase();
+      const creatorSymbol = selectedSymbol;
+      const joinerSymbol = creatorSymbol === 'X' ? 'O' : 'X';
       rooms.set(roomId, {
-        players: { X: socket.id, O: null },
+        players: { [creatorSymbol]: socket.id, [joinerSymbol]: null },
         board: Array(9).fill(null),
         turn: 'X',
         winner: null,
-        winningLine: null
+        winningLine: null,
+        scores: { [socket.id]: 0 }
       });
       socket.join(roomId);
-      socket.emit("roomCreated", { roomId, symbol: 'X' });
+      socket.emit("roomCreated", { roomId, symbol: creatorSymbol });
     });
 
     socket.on("joinRoom", (roomId) => {
       const room = rooms.get(roomId);
-      if (room && !room.players.O) {
-        room.players.O = socket.id;
-        socket.join(roomId);
-        socket.emit("roomJoined", { roomId, symbol: 'O' });
-        io.to(roomId).emit("gameStart", { board: room.board, turn: room.turn });
+      if (room) {
+        // Find the remaining symbol (the one that's null)
+        const joinerSymbol = room.players.X === null ? 'X' : 'O';
+        if (room.players[joinerSymbol] === null) {
+          room.players[joinerSymbol] = socket.id;
+          room.scores[socket.id] = 0;
+          socket.join(roomId);
+          socket.emit("roomJoined", { roomId, symbol: joinerSymbol });
+          io.to(roomId).emit("gameStart", { board: room.board, turn: room.turn, scores: room.scores });
+        } else {
+          socket.emit("error", "Room is full");
+        }
       } else {
-        socket.emit("error", "Room not found or full");
+        socket.emit("error", "Room not found");
       }
     });
 
@@ -73,6 +83,10 @@ async function startServer() {
         winner = 'draw';
       }
 
+      if (winner && winner !== 'draw') {
+        room.scores[socket.id]++;
+      }
+
       room.winner = winner;
       room.winningLine = winningLine;
       room.turn = symbol === 'X' ? 'O' : 'X';
@@ -81,22 +95,37 @@ async function startServer() {
         board: room.board,
         turn: room.turn,
         winner: room.winner,
-        winningLine: room.winningLine
+        winningLine: room.winningLine,
+        scores: room.scores
       });
     });
 
-    socket.on("restartGame", (roomId) => {
+    socket.on("restartGame", ({ roomId, selectedSymbol }) => {
       const room = rooms.get(roomId);
       if (room && (room.players.X === socket.id || room.players.O === socket.id)) {
+        const requesterId = socket.id;
+        const otherPlayerId = room.players.X === requesterId ? room.players.O : room.players.X;
+        
+        const requesterSymbol = selectedSymbol;
+        const otherSymbol = requesterSymbol === 'X' ? 'O' : 'X';
+        
+        room.players = { [requesterSymbol]: requesterId, [otherSymbol]: otherPlayerId };
         room.board = Array(9).fill(null);
         room.turn = 'X';
         room.winner = null;
         room.winningLine = null;
-        io.to(roomId).emit("gameState", {
+        
+        io.to(requesterId).emit("gameRestart", {
+          symbol: requesterSymbol,
           board: room.board,
           turn: room.turn,
-          winner: room.winner,
-          winningLine: room.winningLine
+          scores: room.scores
+        });
+        io.to(otherPlayerId).emit("gameRestart", {
+          symbol: otherSymbol,
+          board: room.board,
+          turn: room.turn,
+          scores: room.scores
         });
       }
     });
